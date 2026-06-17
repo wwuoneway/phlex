@@ -5,6 +5,7 @@
 #include "core/placement.hpp"
 #include "form/config.hpp"
 #include "form/technology.hpp"
+#include "root_storage/demangle_name.hpp"
 #include "root_storage/root_tbranch_write_container.hpp"
 #include "root_storage/root_tfile.hpp"
 #include "root_storage/root_ttree_write_container.hpp"
@@ -585,6 +586,110 @@ TEST_CASE("StorageWriter parses colon indices and honors process_name key", "[fo
   CHECK(seg_value == 11ULL);
   REQUIRE(product_id != nullptr);
   CHECK(*product_id == "DeclaredProduct|UnitTest|");
+
+  file->Close();
+}
+
+TEST_CASE("StorageWriter writes ProductRegistry ProductType metadata", "[form]")
+{
+  std::string const file_name = "testProductRegistryProductType.root";
+  StorageWriter writer;
+  form::experimental::config::tech_setting_config settings;
+
+  std::map<std::unique_ptr<Placement>, std::type_info const*> containers;
+  containers.emplace(std::make_unique<Placement>(file_name, "TypeTest/value", technology),
+                     &typeid(std::vector<int>));
+  containers.emplace(std::make_unique<Placement>(file_name, "TypeTest/index", technology),
+                     &typeid(std::string));
+  writer.createContainers(containers, settings);
+
+  Placement payload_placement(file_name, "TypeTest/value", technology);
+  std::vector<int> payload = {1, 2, 3, 4};
+  writer.fillContainer(payload_placement, &payload, typeid(std::vector<int>), "HitCollection");
+
+  Placement index_placement(file_name, "TypeTest/index", technology);
+  std::string index_text = "[EVENT=00000001;SEG=00000002]";
+  writer.fillContainer(index_placement, &index_text, typeid(std::string), "TypeTest");
+  writer.commitContainers(index_placement);
+  writer.finalize(settings);
+
+  auto file = TFile::Open(file_name.c_str(), "READ");
+  REQUIRE(file != nullptr);
+  REQUIRE_FALSE(file->IsZombie());
+
+  TTree* registry = file->Get<TTree>("ProductRegistry");
+  REQUIRE(registry != nullptr);
+  REQUIRE(registry->GetBranch("ProductType") != nullptr);
+  REQUIRE(registry->GetEntries() > 0);
+
+  std::string* product_name = nullptr;
+  std::string* product_type = nullptr;
+  registry->SetBranchAddress("ProductName", &product_name);
+  registry->SetBranchAddress("ProductType", &product_type);
+
+  bool found_expected_product = false;
+  std::string expected_type = "std::vector<int>";
+  for (Long64_t i = 0; i < registry->GetEntries(); ++i) {
+    registry->GetEntry(i);
+    if (product_name != nullptr && *product_name == "HitCollection") {
+      REQUIRE(product_type != nullptr);
+      CHECK(*product_type == expected_type);
+      found_expected_product = true;
+      break;
+    }
+  }
+  CHECK(found_expected_product);
+
+  file->Close();
+}
+
+TEST_CASE("StorageWriter stores scalar ProductType as a vector container type", "[form]")
+{
+  std::string const file_name = "testProductRegistryScalarProductType.root";
+  StorageWriter writer;
+  form::experimental::config::tech_setting_config settings;
+
+  std::map<std::unique_ptr<Placement>, std::type_info const*> containers;
+  containers.emplace(std::make_unique<Placement>(file_name, "Count/value", technology),
+                     &typeid(int));
+  containers.emplace(std::make_unique<Placement>(file_name, "Count/index", technology),
+                     &typeid(std::string));
+  writer.createContainers(containers, settings);
+
+  Placement payload_placement(file_name, "Count/value", technology);
+  int payload = 42;
+  writer.fillContainer(payload_placement, &payload, typeid(int), "TrackCount");
+
+  Placement index_placement(file_name, "Count/index", technology);
+  std::string index_text = "[EVENT=00000001;SEG=00000002]";
+  writer.fillContainer(index_placement, &index_text, typeid(std::string), "Count");
+  writer.commitContainers(index_placement);
+  writer.finalize(settings);
+
+  auto file = TFile::Open(file_name.c_str(), "READ");
+  REQUIRE(file != nullptr);
+  REQUIRE_FALSE(file->IsZombie());
+
+  TTree* registry = file->Get<TTree>("ProductRegistry");
+  REQUIRE(registry != nullptr);
+  REQUIRE(registry->GetBranch("ProductType") != nullptr);
+
+  std::string* product_name = nullptr;
+  std::string* product_type = nullptr;
+  registry->SetBranchAddress("ProductName", &product_name);
+  registry->SetBranchAddress("ProductType", &product_type);
+
+  bool found_expected_product = false;
+  for (Long64_t i = 0; i < registry->GetEntries(); ++i) {
+    registry->GetEntry(i);
+    if (product_name != nullptr && *product_name == "TrackCount") {
+      REQUIRE(product_type != nullptr);
+      CHECK(*product_type == "std::vector<int>");
+      found_expected_product = true;
+      break;
+    }
+  }
+  CHECK(found_expected_product);
 
   file->Close();
 }

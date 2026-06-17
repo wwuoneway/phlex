@@ -8,6 +8,7 @@
 #include "form/technology.hpp"
 #include "util/factories.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <charconv>
 #include <cstdint>
@@ -22,6 +23,10 @@
 #include "TTree.h"
 #include "root_storage/root_tfile.hpp"
 #include <TUUID.h>
+#endif
+
+#ifdef USE_ROOT_STORAGE
+#include "root_storage/demangle_name.hpp"
 #endif
 
 using namespace form::detail::experimental;
@@ -196,6 +201,63 @@ namespace {
     return std::string();
   }
 
+#ifdef USE_ROOT_STORAGE
+  bool type_name_looks_like_container(std::string const& type_name)
+  {
+    return type_name.rfind("std::vector<", 0) == 0 || type_name.rfind("std::array<", 0) == 0 ||
+           type_name.rfind("std::list<", 0) == 0 || type_name.rfind("std::deque<", 0) == 0 ||
+           type_name.rfind("std::set<", 0) == 0 || type_name.rfind("std::map<", 0) == 0;
+  }
+
+  std::string canonicalize_vector_type_name(std::string const& type_name)
+  {
+    constexpr std::string_view prefix = "std::vector<";
+    if (type_name.rfind(prefix, 0) != 0) {
+      return type_name;
+    }
+
+    std::size_t const start = prefix.size();
+    int template_depth = 0;
+    std::size_t comma = std::string::npos;
+    for (std::size_t i = start; i < type_name.size(); ++i) {
+      char const ch = type_name[i];
+      if (ch == '<') {
+        ++template_depth;
+      } else if (ch == '>') {
+        if (template_depth == 0) {
+          break;
+        }
+        --template_depth;
+      } else if (ch == ',' && template_depth == 0) {
+        comma = i;
+        break;
+      }
+    }
+
+    if (comma == std::string::npos) {
+      return type_name;
+    }
+
+    std::string element_type = trim_copy(type_name.substr(start, comma - start));
+    element_type = canonicalize_vector_type_name(element_type);
+    return "std::vector<" + element_type + ">";
+  }
+
+  std::string product_type_name(std::type_info const& type)
+  {
+    std::string const demangled = DemangleName(type);
+    if (type_name_looks_like_container(demangled)) {
+      if (demangled.rfind("std::vector<", 0) == 0) {
+        return canonicalize_vector_type_name(demangled);
+      }
+      return demangled;
+    }
+    return "std::vector<" + demangled + ">";
+  }
+#else
+  std::string product_type_name(std::type_info const& type) { return type.name(); }
+#endif
+
   std::string build_product_id(std::string const& product_name,
                                std::string const& producer,
                                std::string const& process_name)
@@ -298,7 +360,7 @@ void StorageWriter::createContainers(
 
 void StorageWriter::fillContainer(Placement const& plcmnt,
                                   void const* data,
-                                  std::type_info const& /* type*/,
+                                  std::type_info const& type,
                                   std::string const& product_name)
 {
   // Use file+container as composite key
@@ -318,6 +380,7 @@ void StorageWriter::fillContainer(Placement const& plcmnt,
     if (!creator_name.empty()) {
       std::string const logical_product_name = !product_name.empty() ? product_name : creator_name;
       m_productsByProducer[plcmnt.fileName()][creator_name].insert(logical_product_name);
+      m_productTypeInfos[plcmnt.fileName()][creator_name][logical_product_name] = &type;
       auto& pending_products = m_pendingProductsByProducer[plcmnt.fileName()][creator_name];
       if (std::find(pending_products.begin(), pending_products.end(), logical_product_name) ==
           pending_products.end()) {
@@ -470,13 +533,31 @@ void StorageWriter::finalize(form::experimental::config::tech_setting_config con
       registry->Branch("ProcessName", &processName);
       registry->Branch("Producer", &producer);
       registry->Branch("ProductID", &productID);
+      std::string productType;
+      registry->Branch("ProductType", &productType);
+
+      auto const file_type_it = m_productTypeInfos.find(fileName);
 
       for (auto const& [creator, product_names] : products_by_producer) {
+        auto creator_type_it = decltype(m_productTypeInfos)::mapped_type::const_iterator{};
+        bool has_creator_type_map = false;
+        if (file_type_it != m_productTypeInfos.end()) {
+          creator_type_it = file_type_it->second.find(creator);
+          has_creator_type_map = creator_type_it != file_type_it->second.end();
+        }
         for (auto const& nm : product_names) {
           productName = nm;
           processName = user_provided_process_name;
           producer = creator;
           productID = build_product_id(productName, producer, processName);
+          // Resolve type string: look up the stored type_info* and demangle it.
+          productType = "";
+          if (has_creator_type_map) {
+            auto const nm_type_it = creator_type_it->second.find(nm);
+            if (nm_type_it != creator_type_it->second.end() && nm_type_it->second != nullptr) {
+              productType = product_type_name(*nm_type_it->second);
+            }
+          }
           registry->Fill();
         }
       }

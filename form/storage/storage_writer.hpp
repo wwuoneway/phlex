@@ -49,6 +49,11 @@ namespace form::detail::experimental {
     std::map<std::string, std::map<std::string, std::set<std::string>>> m_productsByProducer;
     std::map<std::string, std::map<std::string, std::vector<std::string>>>
       m_pendingProductsByProducer;
+    // Tracks the std::type_info* of each written product per file/creator/product-name.
+    // Populated at write time from logical ProductName; used during finalize() to write ProductType.
+    // Pointers are non-owning — type_info objects have static storage duration.
+    std::map<std::string, std::map<std::string, std::map<std::string, std::type_info const*>>>
+      m_productTypeInfos;
   };
 
 } // namespace form::detail::experimental
