@@ -505,7 +505,6 @@ void StorageWriter::finalize(form::experimental::config::tech_setting_config con
 
     std::string fileUUID = generateUUID();
     catalog->Branch("FileUUID", &fileUUID);
-    // Add FileFormatVersion branch
     catalog->Branch("FileFormatVersion", &fileFormatVersion, "FileFormatVersion/I");
 
     // Fill the tree with one entry
@@ -528,12 +527,12 @@ void StorageWriter::finalize(form::experimental::config::tech_setting_config con
       std::string processName;
       std::string producer;
       std::string productID;
+      std::string productType;
 
       registry->Branch("ProductName", &productName);
       registry->Branch("ProcessName", &processName);
       registry->Branch("Producer", &producer);
       registry->Branch("ProductID", &productID);
-      std::string productType;
       registry->Branch("ProductType", &productType);
 
       auto const file_type_it = m_productTypeInfos.find(fileName);
@@ -549,9 +548,9 @@ void StorageWriter::finalize(form::experimental::config::tech_setting_config con
           productName = nm;
           processName = user_provided_process_name;
           producer = creator;
-          productID = build_product_id(productName, producer, processName);
+          productID = build_product_id(nm, creator, user_provided_process_name);
           // Resolve type string: look up the stored type_info* and demangle it.
-          productType = "";
+          productType.clear();
           if (has_creator_type_map) {
             auto const nm_type_it = creator_type_it->second.find(nm);
             if (nm_type_it != creator_type_it->second.end() && nm_type_it->second != nullptr) {

@@ -9,7 +9,10 @@
 #include "root_storage/root_tbranch_write_container.hpp"
 #include "root_storage/root_tfile.hpp"
 #include "root_storage/root_ttree_write_container.hpp"
+#include "core/token.hpp"
 #include "storage/storage_file.hpp"
+#include "storage/storage_read_container.hpp"
+#include "storage/storage_reader.hpp"
 #include "storage/storage_write_container.hpp"
 #include "storage/storage_writer.hpp"
 
@@ -692,4 +695,96 @@ TEST_CASE("StorageWriter stores scalar ProductType as a vector container type", 
   CHECK(found_expected_product);
 
   file->Close();
+}
+
+TEST_CASE("StorageReader::getFileMetadata reads ProductType from ProductRegistry", "[form]")
+{
+  // Step 1 – write a ROOT file with known ProductType values.
+  std::string const file_name = "testStorageReaderProductType.root";
+  {
+    StorageWriter writer;
+    form::experimental::config::tech_setting_config settings;
+
+    std::map<std::unique_ptr<Placement>, std::type_info const*> containers;
+    containers.emplace(std::make_unique<Placement>(file_name, "Maker/hits", technology),
+                       &typeid(std::vector<int>));
+    containers.emplace(std::make_unique<Placement>(file_name, "Maker/index", technology),
+                       &typeid(std::string));
+    writer.createContainers(containers, settings);
+
+    Placement pp(file_name, "Maker/hits", technology);
+    std::vector<int> data = {10, 20, 30};
+    writer.fillContainer(pp, &data, typeid(std::vector<int>), "HitList");
+
+    Placement ip(file_name, "Maker/index", technology);
+    std::string idx = "[EVENT=00000001;SEG=00000001]";
+    writer.fillContainer(ip, &idx, typeid(std::string), "Maker");
+    writer.commitContainers(ip);
+    writer.finalize(settings);
+  }
+
+  // Step 2 – open the file via StorageReader.
+  // Any call to getIndex / readContainer triggers ensureFileMetadata(),
+  // which opens the ROOT file and reads FileCatalog + ProductRegistry.
+  StorageReader reader;
+  form::experimental::config::tech_setting_config settings;
+  Token index_token(file_name, "Maker/index", technology, -1);
+  reader.getIndex(index_token, "EVENT=00000001;SEG=00000001", settings);
+
+  // Step 3 – assert the metadata is populated and ProductType is correct.
+  REQUIRE(reader.hasProductRegistry(file_name));
+  FileMetadata const* meta = reader.getFileMetadata(file_name);
+  REQUIRE(meta != nullptr);
+  REQUIRE_FALSE(meta->productRegistry.empty());
+
+  bool found = false;
+  for (auto const& entry : meta->productRegistry) {
+    if (entry.productName == "HitList") {
+      CHECK(entry.productType == "std::vector<int>");
+      found = true;
+      break;
+    }
+  }
+  CHECK(found);
+}
+
+TEST_CASE("StorageReader::loadFileMetadata loads ProductRegistry ProductType metadata", "[form]")
+{
+  std::string const file_name = "testStorageReaderLoadFileMetadata.root";
+  {
+    StorageWriter writer;
+    form::experimental::config::tech_setting_config settings;
+
+    std::map<std::unique_ptr<Placement>, std::type_info const*> containers;
+    containers.emplace(std::make_unique<Placement>(file_name, "Maker/hits", technology),
+                       &typeid(std::vector<int>));
+    containers.emplace(std::make_unique<Placement>(file_name, "Maker/index", technology),
+                       &typeid(std::string));
+    writer.createContainers(containers, settings);
+
+    Placement pp(file_name, "Maker/hits", technology);
+    std::vector<int> data = {10, 20, 30};
+    writer.fillContainer(pp, &data, typeid(std::vector<int>), "HitList");
+
+    Placement ip(file_name, "Maker/index", technology);
+    std::string idx = "[EVENT=00000001;SEG=00000001]";
+    writer.fillContainer(ip, &idx, typeid(std::string), "Maker");
+    writer.commitContainers(ip);
+    writer.finalize(settings);
+  }
+
+  StorageReader reader;
+  auto const* meta = reader.loadFileMetadata(file_name, technology);
+  REQUIRE(meta != nullptr);
+  REQUIRE(meta->hasProductRegistry);
+
+  bool found = false;
+  for (auto const& entry : meta->productRegistry) {
+    if (entry.productName == "HitList") {
+      CHECK(entry.productType == "std::vector<int>");
+      found = true;
+      break;
+    }
+  }
+  CHECK(found);
 }

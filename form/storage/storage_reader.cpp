@@ -7,24 +7,24 @@
 #include "util/factories.hpp"
 
 #ifdef USE_ROOT_STORAGE
-#include "root_storage/root_tfile.hpp"
 #include "TBranch.h"
 #include "TFile.h"
 #include "TTree.h"
+#include "root_storage/root_tfile.hpp"
 #endif
 
 using namespace form::detail::experimental;
 
 namespace {
 #ifdef USE_ROOT_STORAGE
-  bool readFileCatalogMetadata(TFile* tfile, StorageReader::FileMetadata& metadata)
+  bool readFileCatalogMetadata(TFile* tfile, FileMetadata& metadata)
   {
     auto* tree = tfile->Get<TTree>("FileCatalog");
     if (tree == nullptr || tree->GetEntries() == 0) {
       return false;
     }
 
-    std::string fileUUID;
+    std::string* fileUUID = nullptr;
     int fileFormatVersion = 0;
     TBranch* uuidBranch = tree->GetBranch("FileUUID");
     TBranch* formatBranch = tree->GetBranch("FileFormatVersion");
@@ -36,23 +36,24 @@ namespace {
     tree->SetBranchAddress("FileFormatVersion", &fileFormatVersion);
     tree->GetEntry(0);
 
-    metadata.fileCatalog.fileUUID = std::move(fileUUID);
+    metadata.fileCatalog.fileUUID = fileUUID ? *fileUUID : std::string();
     metadata.fileCatalog.fileFormatVersion = fileFormatVersion;
     metadata.hasFileCatalog = true;
     return true;
   }
 
-  bool readProductRegistryMetadata(TFile* tfile, StorageReader::FileMetadata& metadata)
+  bool readProductRegistryMetadata(TFile* tfile, FileMetadata& metadata)
   {
     auto* tree = tfile->Get<TTree>("ProductRegistry");
     if (tree == nullptr || tree->GetEntries() == 0) {
       return false;
     }
 
-    std::string productName;
-    std::string processName;
-    std::string producer;
-    std::string productID;
+    std::string* productName = nullptr;
+    std::string* processName = nullptr;
+    std::string* producer = nullptr;
+    std::string* productID = nullptr;
+    std::string* productType = nullptr;
 
     TBranch* productBranch = tree->GetBranch("ProductName");
     TBranch* processBranch = tree->GetBranch("ProcessName");
@@ -68,12 +69,24 @@ namespace {
     tree->SetBranchAddress("Producer", &producer);
     tree->SetBranchAddress("ProductID", &productID);
 
+    // ProductType is optional: old files written before this feature was added
+    // will not have the branch; leave productType as "" for those entries.
+    TBranch* productTypeBranch = tree->GetBranch("ProductType");
+    if (productTypeBranch != nullptr) {
+      tree->SetBranchAddress("ProductType", &productType);
+    }
+
     metadata.productRegistry.clear();
     metadata.productRegistry.reserve(tree->GetEntries());
 
     for (Long64_t entry = 0; entry < tree->GetEntries(); ++entry) {
       tree->GetEntry(entry);
-      metadata.productRegistry.push_back({productName, processName, producer, productID});
+      metadata.productRegistry.push_back({
+        productName ? *productName : std::string(),
+        processName ? *processName : std::string(),
+        producer ? *producer : std::string(),
+        productID ? *productID : std::string(),
+        productType ? *productType : std::string()});
     }
 
     metadata.hasProductRegistry = true;
@@ -171,10 +184,16 @@ bool StorageReader::hasProductRegistry(std::string const& fileName) const
   return it != m_fileMetadata.end() && it->second.hasProductRegistry;
 }
 
-StorageReader::FileMetadata const* StorageReader::getFileMetadata(std::string const& fileName) const
+FileMetadata const* StorageReader::getFileMetadata(std::string const& fileName) const
 {
   auto it = m_fileMetadata.find(fileName);
   return it == m_fileMetadata.end() ? nullptr : &it->second;
+}
+
+FileMetadata const* StorageReader::loadFileMetadata(std::string const& fileName, int technology)
+{
+  ensureFileMetadata(fileName, technology);
+  return getFileMetadata(fileName);
 }
 
 void StorageReader::ensureFileMetadata(std::string const& fileName, int technology)

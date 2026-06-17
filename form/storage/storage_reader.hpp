@@ -20,6 +20,7 @@ namespace form::detail::experimental {
     std::string processName;
     std::string producer;
     std::string productID;
+    std::string productType; // demangled C++ type, e.g. "std::vector<recob::Hit>"
   };
 
   struct FileCatalogMetadata {
@@ -52,6 +53,7 @@ namespace form::detail::experimental {
     bool hasFileCatalog(std::string const& fileName) const;
     bool hasProductRegistry(std::string const& fileName) const;
     FileMetadata const* getFileMetadata(std::string const& fileName) const;
+    FileMetadata const* loadFileMetadata(std::string const& fileName, int technology);
 
   private:
     void ensureFileMetadata(std::string const& fileName, int technology);
