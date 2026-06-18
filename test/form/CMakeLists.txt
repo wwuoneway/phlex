@@ -36,6 +36,7 @@ if(FORM_USE_ROOT_STORAGE)
         reader.cpp
         LIBRARIES
         form
+        storage
         form_test_data_products
         form_test_utils
         TEST_ARGS
