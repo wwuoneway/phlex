@@ -121,6 +121,19 @@ if(FORM_USE_ROOT_STORAGE)
   endforeach()
 endif()
 
+add_library(sum_by_2_transform MODULE sum_by_2_transform.cpp)
+target_link_libraries(sum_by_2_transform PRIVATE phlex::module)
+
+add_library(generate_vector MODULE generate_vector.cpp)
+target_link_libraries(generate_vector PRIVATE phlex::module)
+
+add_library(generate_layers_filtered MODULE generate_layers_filtered.cpp)
+target_link_libraries(generate_layers_filtered PRIVATE phlex::module layer_generator_internal)
+
+add_library(form_source_extra_types MODULE form_source_extra_types.cpp)
+target_link_libraries(form_source_extra_types PRIVATE phlex::module form)
+target_include_directories(form_source_extra_types PRIVATE ${PROJECT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/form)
+
 cet_test(
   job:form_module
   HANDBUILT

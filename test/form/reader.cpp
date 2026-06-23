@@ -35,7 +35,7 @@ struct EvtChecksum {
   float check;
 };
 
-struct IndexRegistryEntry {
+struct IndexRegistryRow {
   std::string containerName;
   unsigned long long payloadRow = 0;
 };
@@ -120,7 +120,7 @@ bool verifyToyFileMetadata(std::string const& filename)
   indexRegistry->SetBranchAddress("ContainerName", &indexContainerName);
   indexRegistry->SetBranchAddress("PayloadRow", &indexPayloadRow);
 
-  std::map<std::string, std::vector<IndexRegistryEntry>> indexEntries;
+  std::map<std::string, std::vector<IndexRegistryRow>> indexEntries;
   for (Long64_t entry = 0; entry < indexRegistry->GetEntries(); ++entry) {
     indexRegistry->GetEntry(entry);
     std::string pid = indexProductID ? *indexProductID : std::string();
@@ -154,7 +154,7 @@ bool verifyToyFileMetadata(std::string const& filename)
     return false;
   }
 
-  auto verifyPayloadRows = [&](std::string const& treeName, std::vector<IndexRegistryEntry> const& entries) {
+  auto verifyPayloadRows = [&](std::string const& treeName, std::vector<IndexRegistryRow> const& entries) {
     TTree* tree = file->Get<TTree>(treeName.c_str());
     if (!tree) {
       std::cerr << "PHLEX: Metadata verification FAILED: missing tree while validating payload rows: " << treeName << '\n';

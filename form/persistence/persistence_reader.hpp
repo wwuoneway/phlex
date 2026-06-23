@@ -33,7 +33,8 @@ namespace form::detail::experimental {
               std::string const& label,
               std::string const& id,
               void const** data,
-              std::type_info const& type) override;
+              std::type_info const& type,
+              std::string const& product_type = "") override;
 
   private:
     std::unique_ptr<Token> getToken(std::string const& creator,

@@ -29,7 +29,8 @@ namespace form::detail::experimental {
                       std::string const& label,
                       std::string const& id,
                       void const** data,
-                      std::type_info const& type) = 0;
+                      std::type_info const& type,
+                      std::string const& product_type = "") = 0;
   };
 
   std::unique_ptr<IPersistenceReader> createPersistenceReader();

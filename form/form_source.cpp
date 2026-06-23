@@ -2,128 +2,284 @@
 
 #include "form/config.hpp"
 #include "form/form_reader.hpp"
+#include "form/form/form_source_type_registry.hpp"
 #include "form/technology.hpp"
 #include "form/storage/storage_reader.hpp"
+#include "phlex/model/data_cell_index.hpp"
 
-#include <cassert>
-#include <iostream>
+#include <algorithm>
+#include <cctype>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <type_traits>
+#include <unordered_set>
 #include <unordered_map>
 #include <vector>
 
 namespace {
 
-  class FormInputSource {
+  std::string normalize_layer_name(std::string layer)
+  {
+    std::transform(layer.begin(), layer.end(), layer.begin(), [](unsigned char c) {
+      return static_cast<char>(std::tolower(c));
+    });
+    return layer;
+  }
+}
+
+namespace {
+
+  class FormInputSource : public phlex::experimental::source {
   public:
-    FormInputSource(form::experimental::config::ItemConfig const& input_cfg,
-                    form::experimental::config::tech_setting_config const& tech_cfg) :
-      reader_(std::make_shared<form::experimental::form_reader_interface>(input_cfg, tech_cfg))
+    FormInputSource(std::string input_file,
+                    std::vector<std::string> products,
+                    std::string advertised_creator,
+                    int technology,
+                    int starting_cell,
+                    int cells_to_read,
+                    int skip_every,
+                    int cell_number) :
+      input_file_(std::move(input_file)),
+      products_(std::move(products)),
+      advertised_creator_(std::move(advertised_creator)),
+      technology_(technology),
+      starting_cell_(starting_cell),
+      cells_to_read_(cells_to_read),
+      skip_every_(skip_every),
+      cell_number_(cell_number),
+      reader_(nullptr),
+      metadata_(nullptr)
     {
+      // Load FORM metadata and retain the reader for lifetime safety.
+      metadata_ = storage_reader_.loadFileMetadata(input_file_, technology_);
+      if (metadata_ == nullptr || !metadata_->hasProductRegistry) {
+        throw std::runtime_error("FORM input file " + input_file_ +
+                                 " does not contain a ProductRegistry");
+      }
+
+      // Build input config for FORM reader
+      form::experimental::config::ItemConfig input_cfg;
+      form::experimental::config::tech_setting_config tech_cfg;
+      for (auto const& name : products_) {
+        input_cfg.addItem(name, input_file_, technology_);
+      }
+
+      reader_ = std::make_shared<form::experimental::form_reader_interface>(input_cfg, tech_cfg);
+
+      build_indices_from_metadata();
     }
 
-    template <typename T>
-    T const& read(std::string const& creator,
-                  std::string const& product_name,
-                  phlex::data_cell_index const& id)
+    phlex::experimental::provider_bundles create_providers(
+      phlex::product_selector const& selector) override
     {
-      std::string const index_str = id.to_string();
-      form::experimental::product_with_name pb{product_name, nullptr, &typeid(T)};
-      reader_->read(creator, index_str, pb);
-      if (!pb.data) {
-        throw std::runtime_error("FORM Error: Failed to retrieve product [" + product_name +
-                                 "] for " + index_str);
+      using namespace phlex::experimental;
+      provider_bundles bundles;
+
+      // For each product in the products list, check if it matches the selector
+      for (auto const& product_name : products_) {
+        // Find product entry in metadata
+        std::optional<std::string> product_type_opt;
+        std::optional<form::detail::experimental::ProductRegistryEntry> entry_opt;
+
+        for (auto const& entry : metadata_->productRegistry) {
+          if (entry.productName == product_name) {
+            product_type_opt = entry.productType;
+            entry_opt = entry;
+            break;
+          }
+        }
+
+        if (!product_type_opt.has_value() || product_type_opt->empty()) {
+          throw std::runtime_error("Unable to determine FORM container type for product: " +
+                                   product_name);
+        }
+
+        if (!entry_opt.has_value()) {
+          throw std::runtime_error("Product not found in ProductRegistry: " + product_name);
+        }
+
+        // Determine actual FORM creator from metadata, or fall back to advertised creator.
+        std::string actual_creator = entry_opt->producer;
+        if (actual_creator.empty()) {
+          actual_creator = advertised_creator_;
+        }
+
+        // Use advertised creator for Phlex product registration.
+        std::string advertised_creator = advertised_creator_.empty() ? actual_creator : advertised_creator_;
+        product_specification spec(algorithm_name::create(advertised_creator),
+                                   identifier(product_name),
+                                   make_type_id_for_form_type(*product_type_opt));
+
+        // Check if selector matches this product (layer="event", stage="CURRENT")
+        if (!selector.match(spec, identifier("event"), identifier("CURRENT"))) {
+          continue;
+        }
+
+        // Create provider bundle based on type
+        auto bundle = create_provider_bundle_for_type(
+          actual_creator, product_name, *product_type_opt, spec);
+        if (bundle.has_value()) {
+          bundles.push_back(std::move(bundle.value()));
+        }
       }
-      return *static_cast<T const*>(pb.data);
+
+      return bundles;
     }
-  
+
+    phlex::index_generator indices() override
+    {
+      for (auto const& idx : index_sequence_) {
+        co_yield idx;
+      }
+    }
+
   private:
+    std::string input_file_;
+    std::vector<std::string> products_;
+    std::string advertised_creator_;
+    int technology_;
+    int starting_cell_;
+    int cells_to_read_;
+    int skip_every_;
+    int cell_number_;
+    form::detail::experimental::StorageReader storage_reader_;
     std::shared_ptr<form::experimental::form_reader_interface> reader_;
-  };
+    form::detail::experimental::FileMetadata const* metadata_;
+    std::vector<phlex::data_cell_index_ptr> index_sequence_;
 
-  template <typename T, typename Source>
-  void register_form_input_provider(Source& s,
-                                    std::shared_ptr<FormInputSource> const& form_input,
-                                    std::string const& provider_name,
-                                    std::string const& creator,
-                                    std::string const& product_name)
-  {
-    s.provide(provider_name,
-              [form_input, creator, product_name](phlex::data_cell_index const& id) -> T {
-                return form_input->read<T>(creator, product_name, id);
-              })
-      .output_product(phlex::experimental::algorithm_name::create(creator),
-                      phlex::experimental::identifier(product_name),
-                      phlex::experimental::identifier("event"));
-  }
+    void build_indices_from_metadata()
+    {
+      if (metadata_ == nullptr || !metadata_->hasIndexRegistry ||
+          metadata_->indexLayerSchema.empty() || metadata_->indexRegistry.empty()) {
+        return;
+      }
 
-  template <typename Source>
-  void register_provider_by_metadata(Source& s,
-                                     std::shared_ptr<FormInputSource> const& form_input,
-                                     std::string const& provider_name,
-                                     std::string const& creator,
-                                     std::string const& product_name,
-                                     std::string const& product_type)
-  {
-    if (product_type == "std::vector<int>") {
-      register_form_input_provider<std::vector<int>>(s, form_input, provider_name, creator, product_name);
-    } else if (product_type == "std::vector<unsigned int>") {
-      register_form_input_provider<std::vector<unsigned int>>(s, form_input, provider_name, creator, product_name);
-    } else if (product_type == "std::vector<long>") {
-      register_form_input_provider<std::vector<long>>(s, form_input, provider_name, creator, product_name);
-    } else if (product_type == "std::vector<unsigned long>") {
-      register_form_input_provider<std::vector<unsigned long>>(s, form_input, provider_name, creator, product_name);
-    } else if (product_type == "std::vector<long long>") {
-      register_form_input_provider<std::vector<long long>>(s, form_input, provider_name, creator, product_name);
-    } else if (product_type == "std::vector<unsigned long long>") {
-      register_form_input_provider<std::vector<unsigned long long>>(s, form_input, provider_name, creator, product_name);
-    } else if (product_type == "std::vector<float>") {
-      register_form_input_provider<std::vector<float>>(s, form_input, provider_name, creator, product_name);
-    } else if (product_type == "std::vector<double>") {
-      register_form_input_provider<std::vector<double>>(s, form_input, provider_name, creator, product_name);
-    } else if (product_type == "std::vector<bool>") {
-      register_form_input_provider<std::vector<bool>>(s, form_input, provider_name, creator, product_name);
-    } else if (product_type == "std::vector<char>") {
-      register_form_input_provider<std::vector<char>>(s, form_input, provider_name, creator, product_name);
-    } else if (product_type == "std::vector<std::string>") {
-      register_form_input_provider<std::vector<std::string>>(s, form_input, provider_name, creator, product_name);
-    } else {
-      throw std::runtime_error("Unsupported FORM product type: " + product_type + " for product " + product_name);
-    }
-  }
+      std::vector<phlex::data_cell_index_ptr> all_indices;
+      all_indices.reserve(metadata_->indexRegistry.size());
+      std::unordered_set<std::string> seen;
 
-  std::optional<std::string> findProductType(
-    form::detail::experimental::FileMetadata const& metadata,
-    std::string const& product_name)
-  {
-    for (auto const& entry : metadata.productRegistry) {
-      if (entry.productName == product_name) {
-        return entry.productType;
+      for (auto const& row : metadata_->indexRegistry) {
+        if (row.layerValues.size() != metadata_->indexLayerSchema.size()) {
+          continue;
+        }
+
+        std::string dedupe_key;
+        for (std::size_t i = 0; i < row.layerValues.size(); ++i) {
+          if (i > 0) {
+            dedupe_key.push_back('|');
+          }
+          dedupe_key += std::to_string(row.layerValues[i]);
+        }
+
+        if (!seen.insert(dedupe_key).second) {
+          continue;
+        }
+
+        auto idx = phlex::data_cell_index::job();
+        for (std::size_t i = 0; i < metadata_->indexLayerSchema.size(); ++i) {
+          idx = idx->make_child(normalize_layer_name(metadata_->indexLayerSchema[i]),
+                                static_cast<std::size_t>(row.layerValues[i]));
+        }
+        all_indices.push_back(std::move(idx));
+      }
+
+      if (all_indices.empty()) {
+        return;
+      }
+
+      if (cell_number_ >= 0) {
+        std::size_t const selected = static_cast<std::size_t>(cell_number_);
+        if (selected < all_indices.size()) {
+          index_sequence_.push_back(all_indices[selected]);
+        }
+        return;
+      }
+
+      std::size_t const begin =
+        static_cast<std::size_t>(std::max(starting_cell_, 0));
+      if (begin >= all_indices.size()) {
+        return;
+      }
+
+      std::size_t end = all_indices.size();
+      if (cells_to_read_ > 0) {
+        std::size_t const requested = static_cast<std::size_t>(cells_to_read_);
+        if (requested < (end - begin)) {
+          end = begin + requested;
+        }
+      }
+
+      for (std::size_t i = begin; i < end; ++i) {
+        if (skip_every_ > 0 && (i % static_cast<std::size_t>(skip_every_) == 0)) {
+          continue;
+        }
+        index_sequence_.push_back(all_indices[i]);
       }
     }
-    return std::nullopt;
-  }
+
+    // Helper to create type_id from FORM product type string
+    phlex::experimental::type_id make_type_id_for_form_type(std::string const& type_str)
+    {
+      auto const* entry = form::experimental::find_form_product_type(type_str);
+      if (entry == nullptr) {
+        throw std::runtime_error("Unsupported FORM product type: " + type_str);
+      }
+      return entry->type_id;
+    }
+
+    // Type-erased read: dispatches on productType string at runtime
+    // Returns product_ptr (type-erased container with runtime type info)
+    phlex::experimental::product_ptr read_product_from_form(
+      std::string const& creator,
+      std::string const& product_name,
+      std::string const& index_str,
+      std::string const& product_type)
+    {
+      auto const* entry = form::experimental::find_form_product_type(product_type);
+      if (entry == nullptr) {
+        throw std::runtime_error("Unsupported FORM product type: " + product_type);
+      }
+      return entry->reader_fn(*reader_, creator, product_name, index_str, product_type);
+    }
+
+    std::optional<phlex::experimental::provider_bundle> create_provider_bundle_for_type(
+      std::string const& actual_creator,
+      std::string const& product_name,
+      std::string const& product_type,
+      phlex::experimental::product_specification const& spec)
+    {
+      // Capture only what's needed for the provider function
+      // The actual type dispatch happens at call time in read_product_from_form
+      auto provider_func = [this, actual_creator, product_name, product_type](
+                             phlex::data_cell_index const& id) -> phlex::experimental::product_ptr {
+        return read_product_from_form(actual_creator, product_name, id.to_string(), product_type);
+      };
+
+      return phlex::experimental::provider_bundle{
+        .provider_function = std::move(provider_func),
+        .max_concurrency = phlex::concurrency::serial,
+        .spec = spec,
+        .layer = "event",
+        .stage = "CURRENT"};
+    }
+  };
 
 }
 
-PHLEX_REGISTER_PROVIDERS(s, config)
+PHLEX_REGISTER_SOURCE(s, config)
 {
-  std::cout << "Registering FORM input source...\n";
-
-  // Extract configuration from Phlex config
   std::string const input_file = config.get<std::string>("input_file");
-  std::string const creator = config.get<std::string>("creator");
-  std::string const tech_string = config.get<std::string>("technology", "ROOT_TTREE");
   auto const products = config.get<std::vector<std::string>>("products");
-
-  std::cout << "Configuration:\n";
-  std::cout << "  input_file: " << input_file << "\n";
-  std::cout << "  creator: " << creator << "\n";
-  std::cout << "  technology: " << tech_string << "\n";
+  std::string const tech_string = config.get<std::string>("technology", "ROOT_TTREE");
+  std::string const advertised_creator =
+    config.get<std::string>("advertised_creator", config.get<std::string>("module_label", ""));
+  int const starting_cell = config.get<int>("starting_cell", 0);
+  int const cells_to_read = config.get<int>("cells_to_read", -1);
+  int const skip_every = config.get<int>("skip_every", 0);
+  int const cell_number = config.get<int>("cell_number", -1);
 
   std::unordered_map<std::string_view, int> const tech_lookup = {
     {"ROOT_TTREE", form::technology::ROOT_TTREE},
@@ -131,39 +287,19 @@ PHLEX_REGISTER_PROVIDERS(s, config)
     {"HDF5", form::technology::HDF5}};
 
   auto it = tech_lookup.find(tech_string);
-
   if (it == tech_lookup.end()) {
     throw std::runtime_error("Unknown technology: " + tech_string);
   }
 
   int const technology = it->second;
 
-  form::detail::experimental::StorageReader reader;
-  auto const* metadata = reader.loadFileMetadata(input_file, technology);
-  if (metadata == nullptr) {
-    throw std::runtime_error("Failed to load FORM file metadata for " + input_file);
-  }
-  if (!metadata->hasProductRegistry) {
-    throw std::runtime_error("FORM input file " + input_file + " does not contain a ProductRegistry");
-  }
-
-  // Build input config
-  form::experimental::config::ItemConfig input_cfg;
-  form::experimental::config::tech_setting_config tech_cfg;
-  for (auto const& name : products) {
-    input_cfg.addItem(name, input_file, technology);
-  }
-
-  auto form_input = std::make_shared<FormInputSource>(input_cfg, tech_cfg);
-
-  for (auto const& name : products) {
-    auto const type_name = findProductType(*metadata, name);
-    if (!type_name.has_value() || type_name->empty()) {
-      throw std::runtime_error("Unable to determine FORM container type for product: " + name);
-    }
-
-    register_provider_by_metadata(s, form_input, "provide_" + name, creator, name, *type_name);
-  }
-
-  std::cout << "FORM input source registered successfully\n";
+  s.source<FormInputSource>(config.get<std::string>("module_label"),
+                             input_file,
+                             products,
+                             advertised_creator,
+                             technology,
+                             starting_cell,
+                             cells_to_read,
+                             skip_every,
+                             cell_number);
 }

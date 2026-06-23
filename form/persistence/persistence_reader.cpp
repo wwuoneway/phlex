@@ -41,10 +41,11 @@ void PersistenceReader::read(std::string const& creator,
                              std::string const& label,
                              std::string const& id,
                              void const** data,
-                             std::type_info const& type)
+                             std::type_info const& type,
+                             std::string const& product_type)
 {
   std::unique_ptr<Token> token = getToken(creator, label, id);
-  m_store_reader->readContainer(*token, data, type, m_tech_settings);
+  m_store_reader->readContainer(*token, data, type, product_type, m_tech_settings);
   return;
 }
 

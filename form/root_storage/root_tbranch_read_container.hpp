@@ -21,7 +21,7 @@ namespace form::detail::experimental {
 
     void setFile(std::shared_ptr<IStorage_File> file) override;
 
-    bool read(int id, void const** data, std::type_info const& type) override;
+    bool read(int id, void const** data, std::type_info const& type, std::string const& product_type = "") override;
 
   private:
     std::shared_ptr<TFile> m_tfile;

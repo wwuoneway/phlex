@@ -139,7 +139,7 @@ TEST_CASE("StorageReader basic operations", "[form]")
 
   Token token("file.root", "cont", 0, 1);
   void const* read_data = nullptr;
-  storage->readContainer(token, &read_data, typeid(int), settings);
+  storage->readContainer(token, &read_data, typeid(int), "", settings);
 
   int index = storage->getIndex(token, "some_id", settings);
   CHECK(index == 0);

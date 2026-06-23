@@ -24,7 +24,8 @@ namespace form::experimental {
 
   void form_reader_interface::read(std::string const& creator,
                                    std::string const& segment_id,
-                                   product_with_name& pb)
+                                   product_with_name& pb,
+                                   std::string const& product_type)
   {
 
     auto it = m_product_to_config.find(pb.label);
@@ -32,6 +33,6 @@ namespace form::experimental {
       throw std::runtime_error("No configuration found for product: " + pb.label);
     }
 
-    m_pers_reader->read(creator, pb.label, segment_id, &pb.data, *pb.type);
+    m_pers_reader->read(creator, pb.label, segment_id, &pb.data, *pb.type, product_type);
   }
 }

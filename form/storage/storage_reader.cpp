@@ -9,14 +9,47 @@
 #ifdef USE_ROOT_STORAGE
 #include "TBranch.h"
 #include "TFile.h"
+#include "TList.h"
+#include "TObjString.h"
 #include "TTree.h"
 #include "root_storage/root_tfile.hpp"
 #endif
+
+#include <cstdint>
 
 using namespace form::detail::experimental;
 
 namespace {
 #ifdef USE_ROOT_STORAGE
+  std::vector<std::string> parseSchemaHeader(std::string const& schema_header)
+  {
+    std::vector<std::string> schema;
+    if (schema_header.size() < 2 || schema_header.front() != '[' || schema_header.back() != ']') {
+      return schema;
+    }
+
+    std::string token;
+    bool in_quotes = false;
+    for (std::size_t i = 1; i + 1 < schema_header.size(); ++i) {
+      char const ch = schema_header[i];
+      if (ch == '"') {
+        if (in_quotes) {
+          if (!token.empty()) {
+            schema.push_back(token);
+            token.clear();
+          }
+          in_quotes = false;
+        } else {
+          in_quotes = true;
+        }
+      } else if (in_quotes) {
+        token.push_back(ch);
+      }
+    }
+
+    return schema;
+  }
+
   bool readFileCatalogMetadata(TFile* tfile, FileMetadata& metadata)
   {
     auto* tree = tfile->Get<TTree>("FileCatalog");
@@ -92,6 +125,74 @@ namespace {
     metadata.hasProductRegistry = true;
     return true;
   }
+
+  bool readIndexRegistryMetadata(TFile* tfile, FileMetadata& metadata)
+  {
+    auto* tree = tfile->Get<TTree>("IndexRegistry");
+    if (tree == nullptr || tree->GetEntries() == 0) {
+      return false;
+    }
+
+    auto* user_info = tree->GetUserInfo();
+    if (user_info == nullptr || user_info->GetSize() == 0) {
+      return false;
+    }
+
+    auto* schema_obj = dynamic_cast<TObjString*>(user_info->At(0));
+    if (schema_obj == nullptr) {
+      return false;
+    }
+
+    metadata.indexLayerSchema = parseSchemaHeader(schema_obj->GetString().Data());
+    if (metadata.indexLayerSchema.empty()) {
+      return false;
+    }
+
+    std::vector<ULong64_t> layer_values(metadata.indexLayerSchema.size(), 0);
+    for (std::size_t i = 0; i < metadata.indexLayerSchema.size(); ++i) {
+      TBranch* layer_branch = tree->GetBranch(metadata.indexLayerSchema[i].c_str());
+      if (layer_branch == nullptr) {
+        return false;
+      }
+      tree->SetBranchAddress(metadata.indexLayerSchema[i].c_str(), &layer_values[i]);
+    }
+
+    std::string* productID = nullptr;
+    std::string* containerName = nullptr;
+    ULong64_t payloadRow = 0;
+
+    TBranch* productIDBranch = tree->GetBranch("ProductID");
+    TBranch* containerNameBranch = tree->GetBranch("ContainerName");
+    TBranch* payloadRowBranch = tree->GetBranch("PayloadRow");
+    if (productIDBranch == nullptr || containerNameBranch == nullptr || payloadRowBranch == nullptr) {
+      return false;
+    }
+
+    tree->SetBranchAddress("ProductID", &productID);
+    tree->SetBranchAddress("ContainerName", &containerName);
+    tree->SetBranchAddress("PayloadRow", &payloadRow);
+
+    metadata.indexRegistry.clear();
+    metadata.indexRegistry.reserve(tree->GetEntries());
+
+    for (Long64_t entry = 0; entry < tree->GetEntries(); ++entry) {
+      tree->GetEntry(entry);
+      std::vector<std::uint64_t> stored_layer_values;
+      stored_layer_values.reserve(layer_values.size());
+      for (auto const value : layer_values) {
+        stored_layer_values.push_back(static_cast<std::uint64_t>(value));
+      }
+
+      metadata.indexRegistry.push_back(
+        {std::move(stored_layer_values),
+         productID ? *productID : std::string(),
+         containerName ? *containerName : std::string(),
+         static_cast<std::uint64_t>(payloadRow)});
+    }
+
+    metadata.hasIndexRegistry = true;
+    return true;
+  }
 #endif
 }
 
@@ -145,6 +246,7 @@ int StorageReader::getIndex(Token const& token,
 void StorageReader::readContainer(Token const& token,
                                   void const** data,
                                   std::type_info const& type,
+                                  std::string const& product_type,
                                   form::experimental::config::tech_setting_config const& settings)
 {
   ensureFileMetadata(token.fileName(), token.technology());
@@ -168,7 +270,7 @@ void StorageReader::readContainer(Token const& token,
          settings.getContainerTable(token.technology(), token.containerName()))
       cont->second->setAttribute(key, value);
   }
-  cont->second->read(token.id(), data, type);
+  cont->second->read(token.id(), data, type, product_type);
   return;
 }
 
@@ -223,6 +325,7 @@ void StorageReader::ensureFileMetadata(std::string const& fileName, int technolo
   FileMetadata metadata;
   readFileCatalogMetadata(tfile.get(), metadata);
   readProductRegistryMetadata(tfile.get(), metadata);
+  readIndexRegistryMetadata(tfile.get(), metadata);
   m_fileMetadata[fileName] = std::move(metadata);
 #else
   m_fileMetadata[fileName] = FileMetadata();

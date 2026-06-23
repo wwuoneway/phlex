@@ -28,7 +28,8 @@ void Storage_Read_Container::setFile(std::shared_ptr<IStorage_File> file) { m_fi
 
 bool Storage_Read_Container::read(int /* id*/,
                                   void const** /*data*/,
-                                  std::type_info const& /* type*/)
+                                  std::type_info const& /* type*/,
+                                  std::string const& /*product_type*/)
 {
   return false;
 }

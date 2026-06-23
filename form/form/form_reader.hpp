@@ -23,9 +23,8 @@ namespace form::experimental {
 
     void read(std::string const& creator,
               std::string const& segment_id,
-              product_with_name& product);
-
-  private:
+               product_with_name& product,
+               std::string const& product_type = "");
     std::unique_ptr<form::detail::experimental::IPersistenceReader> m_pers_reader;
     std::map<std::string, form::experimental::config::PersistenceItem> m_product_to_config;
   };

@@ -8,6 +8,7 @@
 
 #include <map>
 #include <memory>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <utility> // for std::pair
@@ -28,11 +29,21 @@ namespace form::detail::experimental {
     int fileFormatVersion = 0;
   };
 
+  struct IndexRegistryEntry {
+    std::vector<std::uint64_t> layerValues;
+    std::string productID;
+    std::string containerName;
+    std::uint64_t payloadRow = 0;
+  };
+
   struct FileMetadata {
     FileCatalogMetadata fileCatalog;
     std::vector<ProductRegistryEntry> productRegistry;
+    std::vector<std::string> indexLayerSchema;
+    std::vector<IndexRegistryEntry> indexRegistry;
     bool hasFileCatalog = false;
     bool hasProductRegistry = false;
+    bool hasIndexRegistry = false;
   };
 
   class StorageReader : public IStorageReader {
@@ -48,6 +59,7 @@ namespace form::detail::experimental {
     void readContainer(Token const& token,
                        void const** data,
                        std::type_info const& type,
+                       std::string const& product_type,
                        form::experimental::config::tech_setting_config const& settings) override;
 
     bool hasFileCatalog(std::string const& fileName) const;

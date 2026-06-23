@@ -25,6 +25,7 @@ namespace form::detail::experimental {
     virtual void readContainer(Token const& token,
                                void const** data,
                                std::type_info const& type,
+                               std::string const& product_type,
                                form::experimental::config::tech_setting_config const& settings) = 0;
   };
 
@@ -79,7 +80,7 @@ namespace form::detail::experimental {
     virtual std::string const& name() = 0;
 
     virtual void setFile(std::shared_ptr<IStorage_File> file) = 0;
-    virtual bool read(int id, void const** data, std::type_info const& type) = 0;
+    virtual bool read(int id, void const** data, std::type_info const& type, std::string const& product_type = "") = 0;
 
     virtual void setAttribute(std::string const& name, std::string const& value) = 0;
   };
