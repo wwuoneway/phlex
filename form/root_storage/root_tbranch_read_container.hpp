@@ -11,13 +11,14 @@
 class TFile;
 class TTree;
 class TBranch;
+class TClass;
 
 namespace form::detail::experimental {
 
   class ROOT_TBranch_Read_ContainerImp : public Storage_Read_Container {
   public:
     explicit ROOT_TBranch_Read_ContainerImp(std::string const& name);
-    ~ROOT_TBranch_Read_ContainerImp() override = default;
+    ~ROOT_TBranch_Read_ContainerImp() override;
 
     void setFile(std::shared_ptr<IStorage_File> file) override;
     void prime(std::type_info const& type) override;
@@ -29,6 +30,14 @@ namespace form::detail::experimental {
     std::shared_ptr<TFile> m_tfile;
     TTree* m_tree{nullptr};
     TBranch* m_branch{nullptr};
+
+    // Current branch buffer - holds the most recent object
+    // Managed by cleanupBranchBuffer() to ensure proper cleanup
+    void* m_branch_buffer{nullptr};
+    TClass* m_branch_buffer_klass{nullptr}; // TClass for complex types, nullptr for fundamental
+
+    // Helper to properly clean up the current buffer
+    void cleanupBranchBuffer();
   };
 
 } // namespace form::detail::experimental

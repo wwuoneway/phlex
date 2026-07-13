@@ -5,6 +5,7 @@
 #include "root_tfile.hpp"
 
 #include "TBranch.h"
+#include "TClass.h"
 #include "TFile.h"
 #include "TLeaf.h"
 #include "TTree.h"
@@ -12,7 +13,6 @@
 #include <gsl/pointers>
 
 #include <mutex>
-#include <unordered_map>
 
 using namespace form::detail::experimental;
 
@@ -27,6 +27,26 @@ namespace {
 ROOT_TBranch_Read_ContainerImp::ROOT_TBranch_Read_ContainerImp(std::string const& name) :
   Storage_Read_Container(name)
 {
+}
+
+ROOT_TBranch_Read_ContainerImp::~ROOT_TBranch_Read_ContainerImp() { cleanupBranchBuffer(); }
+
+void ROOT_TBranch_Read_ContainerImp::cleanupBranchBuffer()
+{
+  if (!m_branch_buffer) {
+    return;
+  }
+
+  if (m_branch_buffer_klass != nullptr) {
+    // Complex type: use TClass::Destructor to properly delete ROOT object
+    m_branch_buffer_klass->Destructor(m_branch_buffer);
+  } else {
+    // Fundamental type: use delete (allocated via new in switch statement)
+    delete[] static_cast<char*>(m_branch_buffer);
+  }
+
+  m_branch_buffer = nullptr;
+  m_branch_buffer_klass = nullptr;
 }
 
 void ROOT_TBranch_Read_ContainerImp::setFile(std::shared_ptr<IStorage_File> file)
@@ -157,6 +177,12 @@ bool ROOT_TBranch_Read_ContainerImp::read(int id, void const** data, std::type_i
         std::string{"ROOT_TBranch_ContainerImp::read unsupported fundamental type: "} +
         DemangleName(type));
     };
+
+    // Clean up previous buffer before assigning new one
+    cleanupBranchBuffer();
+    m_branch_buffer = branchBuffer;
+    m_branch_buffer_klass = nullptr; // Mark as fundamental type
+
     branchStatus = m_tree->SetBranchAddress(
       col_name().c_str(), branchBuffer, nullptr, EDataType(fundInfo->GetType()), false);
   } else {
@@ -167,6 +193,12 @@ bool ROOT_TBranch_Read_ContainerImp::read(int id, void const** data, std::type_i
                                "')");
     }
     branchBuffer = gsl::owner<void*>(klass->New());
+
+    // Clean up previous buffer before assigning new one
+    cleanupBranchBuffer();
+    m_branch_buffer = branchBuffer;
+    m_branch_buffer_klass = klass; // Store TClass for proper cleanup
+
     branchStatus = m_tree->SetBranchAddress(
       col_name().c_str(), reinterpret_cast<void*>(&branchBuffer), klass, EDataType::kOther_t, true);
   }
