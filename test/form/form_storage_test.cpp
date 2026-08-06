@@ -362,6 +362,51 @@ TEST_CASE("Persistence round-trip: all-zero structured id fallback", "[form]")
   CHECK(*read_payload == payload);
 }
 
+TEST_CASE("Persistence round-trip: empty product suffix maps to default column", "[form]")
+{
+  // Regression test for the empty-suffix bug. A data product whose suffix is the
+  // empty string produces the container name "creator/", which splits to an empty
+  // column name. RNTuple used to reject that outright (throwing in
+  // RNTupleModel::AddField, reached via createContainers) and TTree created an
+  // unusable, collision-prone branch. Both storage containers now fall back to the
+  // default "Main" column, so an empty-suffix product must round-trip cleanly
+  // through every backend this test is instantiated for (ROOT_TTREE, ROOT_RNTUPLE).
+  using namespace form::experimental::config;
+
+  std::string const file_name =
+    "persistence_empty_suffix_" + std::to_string(technology) + ".root";
+  std::string const creator = "empty_suffix_creator";
+  std::string const empty_label; // the empty suffix
+
+  ItemConfig cfg;
+  cfg.addItem(empty_label, file_name, technology);
+
+  std::vector<int> payload = {11, 22, 33};
+  {
+    auto writer = createPersistenceWriter();
+    REQUIRE(writer != nullptr);
+    writer->configure(cfg);
+    writer->configureTechSettings(tech_setting_config{});
+    // createContainers is where RNTuple used to throw on the empty field name.
+    REQUIRE_NOTHROW(writer->createContainers(creator, {{empty_label, &typeid(std::vector<int>)}}));
+    writer->registerWrite(creator, empty_label, &payload, typeid(std::vector<int>));
+    writer->commitOutput(creator, "[EVENT=00000001;SEG=00000001]");
+  }
+
+  auto reader = createPersistenceReader();
+  REQUIRE(reader != nullptr);
+  reader->configure(cfg);
+  reader->configureTechSettings(tech_setting_config{});
+
+  void const* raw = nullptr;
+  reader->read(
+    creator, empty_label, "[EVENT=00000001;SEG=00000001]", &raw, typeid(std::vector<int>));
+
+  auto const* read_payload = static_cast<std::vector<int> const*>(raw);
+  REQUIRE(read_payload != nullptr);
+  CHECK(*read_payload == payload);
+}
+
 TEST_CASE("StorageReader getIndex: malformed ids and compatibility fallbacks", "[form]")
 {
   using namespace form::experimental::config;

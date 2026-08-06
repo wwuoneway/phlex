@@ -75,6 +75,15 @@ TEST_CASE("Storage_Read_Container basics", "[form]")
     CHECK(c.top_name() == "no_slash");
     CHECK(c.col_name() == "Main");
   }
+  SECTION("Trailing slash (empty suffix)")
+  {
+    // A product with an empty suffix yields "creator/", which splits to an empty
+    // column name; it must fall back to the default column so the reader looks up
+    // the same branch/field the writer created.
+    Storage_Read_Container c("creator/");
+    CHECK(c.top_name() == "creator");
+    CHECK(c.col_name() == "Main");
+  }
 }
 
 TEST_CASE("Storage_Write_Container basics", "[form]")
@@ -113,6 +122,15 @@ TEST_CASE("Storage_Associative_Write_Container basics", "[form]")
   {
     Storage_Associative_Write_Container c("no_slash");
     CHECK(c.top_name() == "no_slash");
+    CHECK(c.col_name() == "Main");
+  }
+  SECTION("Trailing slash (empty suffix)")
+  {
+    // A product with an empty suffix yields "creator/", which splits to an empty
+    // column name. RNTuple rejects an empty field name and TTree creates an
+    // unusable branch, so it must fall back to the default column.
+    Storage_Associative_Write_Container c("creator/");
+    CHECK(c.top_name() == "creator");
     CHECK(c.col_name() == "Main");
   }
 

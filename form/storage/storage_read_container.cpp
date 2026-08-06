@@ -16,6 +16,13 @@ Storage_Read_Container::Storage_Read_Container(std::string const& name) :
     m_tName = name;
     m_cName = "Main";
   }
+  // A data product with an empty suffix yields a name like "creator/", which
+  // splits to an empty column name. Fall back to the default column name so the
+  // reader looks up the same branch/field the writer created. Must match
+  // Storage_Associative_Write_Container to keep read/write in sync.
+  if (m_cName.empty()) {
+    m_cName = "Main";
+  }
 }
 
 std::string const& Storage_Read_Container::name() { return m_name; }
