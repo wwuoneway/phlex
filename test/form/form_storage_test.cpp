@@ -373,8 +373,7 @@ TEST_CASE("Persistence round-trip: empty product suffix maps to default column",
   // through every backend this test is instantiated for (ROOT_TTREE, ROOT_RNTUPLE).
   using namespace form::experimental::config;
 
-  std::string const file_name =
-    "persistence_empty_suffix_" + std::to_string(technology) + ".root";
+  std::string const file_name = "persistence_empty_suffix_" + std::to_string(technology) + ".root";
   std::string const creator = "empty_suffix_creator";
   std::string const empty_label; // the empty suffix
 
