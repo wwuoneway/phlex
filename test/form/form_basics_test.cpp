@@ -1,9 +1,12 @@
 #include "core/technology.hpp"
 #include "core/token.hpp"
+#include "core/token_registry.hpp"
 #include "form/config.hpp"
 #include "form/form_reader.hpp"
 #include "form/form_source_type_registry.hpp"
 #include "form/form_writer.hpp"
+#include "form/product_with_name.hpp"
+#include "persistence/ipersistence_writer.hpp"
 #include "persistence/persistence_reader.hpp"
 #include "persistence/persistence_writer.hpp"
 #include "storage/factories.hpp"
@@ -25,8 +28,13 @@
 #endif
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdint>
+#include <map>
 #include <memory>
+#include <optional>
 #include <stdexcept>
+#include <string>
+#include <utility>
 #include <vector>
 
 using namespace form::detail::experimental;
@@ -500,4 +508,216 @@ TEST_CASE("FORM source registry: registration error paths", "[form]")
                       form::experimental::form_source_product_from_data_fn{}),
                     std::runtime_error);
   }
+}
+
+// ---------------------------------------------------------------------------
+// parse config once, create containers once, collect tokens for navigation
+// ---------------------------------------------------------------------------
+
+namespace {
+  // A spy backend: records how many times containers were created and hands out an increasing
+  // 0-based row per container so register_write produces real, locatable tokens.
+  class fake_storage_writer : public i_storage_writer {
+  public:
+    void create_containers(
+      std::map<std::unique_ptr<placement>, std::type_info const*> const& containers,
+      form::experimental::config::tech_setting_config const& /*settings*/) override
+    {
+      ++create_calls;
+      for (auto const& [plcmnt, type] : containers) {
+        created.push_back(plcmnt->container_name());
+      }
+    }
+
+    std::uint64_t fill_container(placement const& plcmnt,
+                                 void const* /*data*/,
+                                 std::type_info const& /*type*/) override
+    {
+      return next_row[plcmnt.container_name()]++;
+    }
+
+    void commit_containers(placement const& /*plcmnt*/) override { ++commit_calls; }
+
+    int create_calls = 0;
+    int commit_calls = 0;
+    std::vector<std::string> created;
+    std::map<std::string, std::uint64_t> next_row;
+  };
+
+  // A spy persistence writer: returns a token per product with an increasing row per label, so a
+  // form_writer_interface test can verify token collection without a real storage backend.
+  class fake_persistence_writer : public i_persistence_writer {
+  public:
+    void configure_tech_settings(
+      form::experimental::config::tech_setting_config const& /*settings*/) override
+    {
+    }
+    void configure(form::experimental::config::item_config const& /*config_items*/) override {}
+    void create_containers(
+      std::string const& /*creator*/,
+      std::map<std::string, std::type_info const*> const& /*products*/) override
+    {
+      ++create_calls;
+    }
+    token register_write(std::string const& creator,
+                         std::string const& label,
+                         void const* /*data*/,
+                         std::type_info const& /*type*/) override
+    {
+      std::uint64_t const row = next_row[label]++;
+      return token{"out.root", creator + "/" + label, form::technology::root_ttree, row};
+    }
+    void commit_output(std::string const& /*creator*/, std::string const& /*id*/) override
+    {
+      ++commit_calls;
+    }
+
+    int create_calls = 0;
+    int commit_calls = 0;
+    std::map<std::string, std::uint64_t> next_row;
+  };
+}
+
+TEST_CASE("token_registry collects, finds, overwrites, and iterates", "[form]")
+{
+  token_registry reg;
+  CHECK(reg.empty());
+  CHECK(reg.size() == 0);
+
+  token t1("out.root", "creatorX/prodA", form::technology::root_ttree, 3);
+  reg.add("[event:0]", "creatorX", "prodA", t1);
+  CHECK_FALSE(reg.empty());
+  CHECK(reg.size() == 1);
+
+  auto const found = reg.find("[event:0]", "creatorX", "prodA");
+  REQUIRE(found.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access) -- REQUIRE guards the access
+  CHECK(found->container_name() == "creatorX/prodA");
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+  CHECK(found->id() == 3u);
+
+  // A key that was never added is absent.
+  CHECK_FALSE(reg.find("[event:1]", "creatorX", "prodA").has_value());
+
+  // Re-adding the same (id, creator, label) overwrites in place.
+  token t2("out.root", "creatorX/prodA", form::technology::root_ttree, 9);
+  reg.add("[event:0]", "creatorX", "prodA", t2);
+  CHECK(reg.size() == 1);
+  auto const updated = reg.find("[event:0]", "creatorX", "prodA");
+  REQUIRE(updated.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+  CHECK(updated->id() == 9u);
+
+  // Const iteration visits every collected token.
+  reg.add("[event:1]", "creatorX", "prodA", t1);
+  std::size_t count = 0;
+  for (auto const& entry : reg) {
+    (void)entry;
+    ++count;
+  }
+  CHECK(count == reg.size());
+  CHECK(reg.size() == 2);
+}
+
+TEST_CASE("persistence_writer: config parsed once, containers created once, tokens carry rows",
+          "[form]")
+{
+  using namespace form::experimental::config;
+
+  auto fake = std::make_unique<fake_storage_writer>();
+  auto* spy = fake.get();
+  persistence_writer writer{std::move(fake)};
+
+  item_config cfg;
+  cfg.add_item("prodA", "out.root", form::technology::root_ttree);
+  cfg.add_item("prodB", "out.root", form::technology::root_ttree);
+  writer.configure(cfg);
+  writer.configure_tech_settings(tech_setting_config{});
+
+  std::map<std::string, std::type_info const*> products = {{"prodA", &typeid(int)},
+                                                           {"prodB", &typeid(int)}};
+  int val = 7;
+
+  // First event: the two products plus the navigation ("index") container are created exactly once.
+  writer.create_containers("creatorX", products);
+  CHECK(spy->create_calls == 1);
+  CHECK(spy->created.size() == 3);
+
+  auto const tok_a = writer.register_write("creatorX", "prodA", &val, typeid(int));
+  auto const tok_b = writer.register_write("creatorX", "prodB", &val, typeid(int));
+
+  // Config resolved once: each product routes to its configured file, technology, and full label.
+  CHECK(tok_a.file_name() == "out.root");
+  CHECK(tok_a.container_name() == "creatorX/prodA");
+  CHECK(tok_a.technology() == form::technology::root_ttree);
+  CHECK(tok_a.id() == 0u);
+  CHECK(tok_b.container_name() == "creatorX/prodB");
+  CHECK(tok_b.id() == 0u);
+
+  writer.commit_output("creatorX", "[event:0]");
+  CHECK(spy->commit_calls == 1);
+
+  // Second event: everything already exists, so create_containers makes no new storage call.
+  writer.create_containers("creatorX", products);
+  CHECK(spy->create_calls == 1);
+
+  // Rows keep advancing per container across events.
+  auto const tok_a2 = writer.register_write("creatorX", "prodA", &val, typeid(int));
+  CHECK(tok_a2.id() == 1u);
+}
+
+TEST_CASE("persistence_writer: unknown product has no resolved config", "[form]")
+{
+  using namespace form::experimental::config;
+
+  auto fake = std::make_unique<fake_storage_writer>();
+  persistence_writer writer{std::move(fake)};
+
+  item_config cfg;
+  cfg.add_item("prodA", "out.root", form::technology::root_ttree);
+  writer.configure(cfg);
+  writer.configure_tech_settings(tech_setting_config{});
+
+  int val = 0;
+  CHECK_THROWS_AS(writer.register_write("creatorX", "unknown", &val, typeid(int)),
+                  std::runtime_error);
+}
+
+TEST_CASE("form_writer_interface collects a token per written product", "[form]")
+{
+  using namespace form::experimental::config;
+
+  item_config cfg;
+  cfg.add_item("prodA", "out.root", form::technology::root_ttree);
+  cfg.add_item("prodB", "out.root", form::technology::root_ttree);
+
+  auto fake = std::make_unique<fake_persistence_writer>();
+  auto* spy = fake.get();
+  form::experimental::form_writer_interface writer{cfg, tech_setting_config{}, std::move(fake)};
+
+  int v = 1;
+  std::vector<form::experimental::product_with_name> products = {
+    {.label = "prodA", .data = &v, .type = &typeid(int)},
+    {.label = "prodB", .data = &v, .type = &typeid(int)}};
+
+  writer.write("creatorX", "[event:0]", products);
+  writer.write("creatorX", "[event:1]", products);
+
+  auto const& tokens = writer.tokens();
+  CHECK(tokens.size() == 4); // 2 products x 2 events
+
+  auto const a0 = tokens.find("[event:0]", "creatorX", "prodA");
+  REQUIRE(a0.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+  CHECK(a0->container_name() == "creatorX/prodA");
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+  CHECK(a0->id() == 0u);
+
+  auto const a1 = tokens.find("[event:1]", "creatorX", "prodA");
+  REQUIRE(a1.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+  CHECK(a1->id() == 1u); // second event advances the row
+
+  CHECK(spy->create_calls == 2);
+  CHECK(spy->commit_calls == 2);
 }
