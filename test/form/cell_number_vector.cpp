@@ -1,4 +1,5 @@
-// Writes each data cell's own number so that read-back can verify which cell a row belongs to.
+// Writes each data cell's own layer numbers (outermost first, e.g. {run, event}) so that read-back
+// can verify which cell a row belongs to.
 //
 // The "stamp" transform sleeps for a random time so that stores reach the output out of cell
 // order; the "check_cell_numbers" observer fails the job if a served value belongs to another cell.
@@ -12,6 +13,7 @@
 
 #include <chrono>
 #include <random>
+#include <ranges>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -22,7 +24,22 @@ using namespace phlex;
 namespace {
   std::vector<int> number_of(data_cell_index const& id)
   {
-    return std::vector<int>{static_cast<int>(id.number())};
+    std::vector<int> numbers(id.depth());
+    auto const* cell = &id;
+    for (auto& number : numbers | std::views::reverse) {
+      number = static_cast<int>(cell->number());
+      cell = cell->parent().get();
+    }
+    return numbers;
+  }
+
+  std::string to_string(std::vector<int> const& numbers)
+  {
+    std::string result{"{"};
+    for (auto const number : numbers) {
+      result += (result.size() == 1 ? "" : ", ") + std::to_string(number);
+    }
+    return result + "}";
   }
 }
 
@@ -42,10 +59,8 @@ PHLEX_REGISTER_ALGORITHMS(m, config)
        "check_cell_numbers",
        [](handle<std::vector<int>> const values) {
          if (*values != number_of(values.data_cell_index())) {
-           auto const served =
-             values->empty() ? std::string{"nothing"} : std::to_string(values->front());
            throw std::runtime_error("cell " + values.data_cell_index().to_string() +
-                                    " was served the value " + served);
+                                    " was served the value " + to_string(*values));
          }
        },
        concurrency::unlimited)

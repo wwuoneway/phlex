@@ -447,7 +447,7 @@ cet_test(
 add_library(cell_number_vector MODULE cell_number_vector.cpp)
 target_link_libraries(cell_number_vector PRIVATE phlex::module)
 
-foreach(case unordered offset)
+foreach(case unordered offset nested)
   cet_test(
     job:form_cell_numbers_${case}_write
     HANDBUILT
@@ -485,6 +485,35 @@ foreach(case unordered offset)
     "PHLEX_PLUGIN_PATH=${PROJECT_BINARY_DIR}/${phlex_LIBRARY_DIR}:${CMAKE_BINARY_DIR}/form"
   )
 endforeach()
+
+# Prints each written cell's index, row and value as read back through the storage read path.
+if(FORM_USE_ROOT_STORAGE)
+  add_executable(form_cell_numbers_dump form_cell_numbers_dump.cpp)
+  target_link_libraries(form_cell_numbers_dump PRIVATE storage root_storage)
+  target_include_directories(
+    form_cell_numbers_dump
+    PRIVATE ${PROJECT_SOURCE_DIR}/form ${PROJECT_SOURCE_DIR}
+  )
+
+  foreach(case unordered offset nested)
+    cet_test(
+      form_cell_numbers_${case}_dump
+      HANDBUILT
+      TEST_EXEC
+      form_cell_numbers_dump
+      TEST_ARGS
+      form_cell_numbers_${case}.root
+      ROOT_TTREE
+      stamper:stamp
+      test
+      DIRTY_WORKDIR
+      TEST_WORKDIR
+      form_cell_numbers_${case}
+      REQUIRED_FIXTURES
+      job:form_cell_numbers_${case}_write
+    )
+  endforeach()
+endif()
 
 if(FORM_USE_ROOT_STORAGE AND FORM_USE_RNTUPLE_STORAGE)
   cet_test(
