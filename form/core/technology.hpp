@@ -1,6 +1,7 @@
 #ifndef FORM_CORE_TECHNOLOGY_HPP
 #define FORM_CORE_TECHNOLOGY_HPP
 
+#include <algorithm>
 #include <compare>
 #include <cstdint>
 #include <stdexcept>
@@ -38,15 +39,25 @@ namespace form::technology {
   inline constexpr id hdf5{.major = major::hdf5, .minor = 1};
 
   // Canonical string -> technology mapping: the single place a technology string is parsed, replacing the copies that used to live in each module/source/test
+  // Parse technology names case-insensitively.
   inline id from_string(std::string_view name)
   {
-    if (name == "ROOT_TTREE") {
+    // Locale-independent ASCII case-insensitive comparison.
+    auto const matches = [name](std::string_view canonical) {
+      auto const lower = [](char c) {
+        return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+      };
+      return std::ranges::equal(
+        name, canonical, [&lower](char a, char b) { return lower(a) == lower(b); });
+    };
+
+    if (matches("ROOT_TTREE")) {
       return root_ttree;
     }
-    if (name == "ROOT_RNTUPLE") {
+    if (matches("ROOT_RNTUPLE")) {
       return root_rntuple;
     }
-    if (name == "HDF5") {
+    if (matches("HDF5")) {
       // HDF5 is a reserved technology but has no backend yet: reject it at parse time
       throw std::runtime_error("Technology 'HDF5' is recognized but not yet implemented");
     }
